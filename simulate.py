@@ -13,6 +13,24 @@ from yarl import URL
 from dataclasses import dataclass
 from playwright.async_api import async_playwright, Browser
 
+@dataclass
+class Server:
+    servername: str
+    username: str
+    hub_url: URL
+
+@dataclass
+class RunningServer(Server):
+    start_request_time: datetime
+    start_completion_time: datetime
+    server_url: URL
+    startup_events: List[dict]
+
+@dataclass
+class FailedServer(Server):
+    start_request_time: datetime
+    start_failure_time: datetime
+    startup_events: List[dict]
 
 @dataclass
 class ServerStartResult:
@@ -33,13 +51,13 @@ class ServerStartResult:
         return f"user:{self.username} server:{self.servername} started:{self.started_successfully} startup_duration:{self.startup_duration}"
 
 
-async def load_nbgitpuller_url(browser: Browser, server_url: URL, token: str, nbgitpuller_url: URL, screenshot_name: str):
-    print(f"visiting {server_url}")
+async def load_nbgitpuller_url(browser: Browser, server: RunningServer, token: str, nbgitpuller_url: URL, screenshot_name: str):
+    print(f"visiting {server.server_url}")
     nbgitpuller_url = nbgitpuller_url.extend_query({
         'targetpath': secrets.token_urlsafe(8)
     })
-    target_url = (server_url / nbgitpuller_url.path).with_query(nbgitpuller_url.query)
-    await_url = server_url / target_url.query.get("urlpath", "/lab").rstrip("/")
+    target_url = (server.server_url / nbgitpuller_url.path).with_query(nbgitpuller_url.query)
+    await_url = server.server_url / target_url.query.get("urlpath", "/lab").rstrip("/")
     start_time = datetime.now()
 
     context = await browser.new_context(extra_http_headers={
@@ -51,22 +69,22 @@ async def load_nbgitpuller_url(browser: Browser, server_url: URL, token: str, nb
     await page.wait_for_load_state("networkidle")
     await page.screenshot(path=screenshot_name)
     duration = datetime.now() - start_time
-    print(f"{server_url} completed test in {duration}")
+    print(f"{server.server_url} completed test in {duration}")
 
 
 
-async def start_named_server(session: aiohttp.ClientSession, hub_url: URL, username: str, server_name: str) -> ServerStartResult:
+async def start_named_server(session: aiohttp.ClientSession, server: Server) -> RunningServer | None:
     """
     Try to start a named server as defined
 
     """
-    server_api_url = hub_url / "hub/api/users" / username / "servers" / server_name
+    server_api_url = server.hub_url / "hub/api/users" / server.username / "servers" / server.servername
     events = []
     async with session.post(server_api_url) as resp:
         start_time = datetime.now()
         if resp.status == 202:
             # we are awaiting start, let's look for events
-            print(f"server {server_name} waiting to start")
+            print(f"server {server.servername} waiting to start")
             async with session.get(server_api_url / "progress") as progress_resp:
                 async for line in progress_resp.content:
                     if line.decode().strip() == '':
@@ -76,14 +94,14 @@ async def start_named_server(session: aiohttp.ClientSession, hub_url: URL, usern
                     events.append(progress_event)
                     if progress_event.get("ready") == True:
                         print(progress_event)
-                        return ServerStartResult(
-                            username=username,
-                            servername=server_name,
-                            start_time=start_time,
-                            completion_time=datetime.now(),
-                            started_successfully=True,
-                            events=events,
-                            server_url=URL(hub_url / progress_event['url'][1:]) # Trim leading slashG
+                        return RunningServer(
+                            servername=server.servername,
+                            username=server.username,
+                            hub_url=server.hub_url,
+                            start_request_time=start_time,
+                            start_completion_time=datetime.now(),
+                            startup_events=events,
+                            server_url=URL(server.hub_url / progress_event['url'][1:]) # Trim leading slashG
                         )
         elif resp.status == 201:
             # Means the server is immediately ready, and i don't want to deal with that yet
@@ -91,6 +109,15 @@ async def start_named_server(session: aiohttp.ClientSession, hub_url: URL, usern
         else:
             # Some kinda error
             resp.raise_for_status()
+
+
+async def payload(session: aiohttp.ClientSession, browser: Browser,  auth_token: str, nbgitpuller_url: URL, server: Server):
+    started_server = await start_named_server(session, server)
+    match started_server:
+        case RunningServer():
+            await load_nbgitpuller_url(browser, started_server, auth_token, nbgitpuller_url, server.servername + ".png")
+        case _:
+            print("Server startup failed")
 
 
 async def main():
@@ -112,14 +139,9 @@ async def main():
         async with aiohttp.ClientSession(headers={
             "Authorization": f"token {token}"
         }) as session:
-            servernames = [f"perf-test-{i}" for i in range (args.servers_count)]
-            all_servers = []
-            async with aiometer.amap(partial(start_named_server, session, hub_url, args.username), servernames, max_at_once=args.max_concurrency) as servers:
-                async for server in servers:
-                    all_servers.append(server)
-
+            servers_to_start = [Server(f"perf-{i}", args.username, hub_url) for i in range(args.servers_count)]
             await aiometer.run_all(
-                [partial(load_nbgitpuller_url, browser, server.server_url, token, nbgitpuller_url, server.servername + ".png") for server in all_servers],
+                [partial(payload, session, browser, token, nbgitpuller_url, server) for server in servers_to_start],
                 max_at_once=args.max_concurrency
             )
 
