@@ -13,14 +13,29 @@ from yarl import URL
 from dataclasses import dataclass
 from playwright.async_api import async_playwright, Browser
 
+
+@dataclass
+class HubAccess:
+    """
+    Information needed to talk to a hub
+    """
+    url: URL
+    token: str
+
 @dataclass
 class Server:
+    """
+    Represents a user server
+    """
     servername: str
     username: str
-    hub_url: URL
+    hub_access: HubAccess
 
 @dataclass
 class RunningServer(Server):
+    """
+    Represents a running user server
+    """
     start_request_time: datetime
     start_completion_time: datetime
     server_url: URL
@@ -28,27 +43,12 @@ class RunningServer(Server):
 
 @dataclass
 class FailedServer(Server):
+    """
+    Represents a user server that failed to start
+    """
     start_request_time: datetime
     start_failure_time: datetime
     startup_events: List[dict]
-
-@dataclass
-class ServerStartResult:
-    servername: str
-    username: str
-    start_time: datetime
-    completion_time: datetime
-    started_successfully: bool
-    events: List[dict]
-    server_url: URL
-
-    @property
-    def startup_duration(self):
-        return self.completion_time - self.start_time
-
-    @override
-    def __str__(self) -> str:
-        return f"user:{self.username} server:{self.servername} started:{self.started_successfully} startup_duration:{self.startup_duration}"
 
 
 async def load_nbgitpuller_url(browser: Browser, server: RunningServer, token: str, nbgitpuller_url: URL, screenshot_name: str):
@@ -78,14 +78,17 @@ async def start_named_server(session: aiohttp.ClientSession, server: Server) -> 
     Try to start a named server as defined
 
     """
-    server_api_url = server.hub_url / "hub/api/users" / server.username / "servers" / server.servername
+    headers = {
+        "Authorization": f"token {server.hub_access.token}"
+    }
+    server_api_url = server.hub_access.url / "hub/api/users" / server.username / "servers" / server.servername
     events = []
-    async with session.post(server_api_url) as resp:
+    async with session.post(server_api_url, headers=headers) as resp:
         start_time = datetime.now()
         if resp.status == 202:
             # we are awaiting start, let's look for events
             print(f"server {server.servername} waiting to start")
-            async with session.get(server_api_url / "progress") as progress_resp:
+            async with session.get(server_api_url / "progress", headers=headers) as progress_resp:
                 async for line in progress_resp.content:
                     if line.decode().strip() == '':
                         # Empty line, just continue
@@ -97,11 +100,11 @@ async def start_named_server(session: aiohttp.ClientSession, server: Server) -> 
                         return RunningServer(
                             servername=server.servername,
                             username=server.username,
-                            hub_url=server.hub_url,
+                            hub_access=server.hub_access,
                             start_request_time=start_time,
                             start_completion_time=datetime.now(),
                             startup_events=events,
-                            server_url=URL(server.hub_url / progress_event['url'][1:]) # Trim leading slashG
+                            server_url=URL(server.hub_access.url / progress_event['url'][1:]) # Trim leading slashG
                         )
         elif resp.status == 201:
             # Means the server is immediately ready, and i don't want to deal with that yet
@@ -136,10 +139,8 @@ async def main():
     hub_url = URL(args.hub_url)
     async with async_playwright() as p:
         browser = await p.firefox.launch(headless=False)
-        async with aiohttp.ClientSession(headers={
-            "Authorization": f"token {token}"
-        }) as session:
-            servers_to_start = [Server(f"perf-{i}", args.username, hub_url) for i in range(args.servers_count)]
+        async with aiohttp.ClientSession() as session:
+            servers_to_start = [Server(f"perf-{i}", args.username, HubAccess(hub_url, token)) for i in range(args.servers_count)]
             await aiometer.run_all(
                 [partial(payload, session, browser, token, nbgitpuller_url, server) for server in servers_to_start],
                 max_at_once=args.max_concurrency
