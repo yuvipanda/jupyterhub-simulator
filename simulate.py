@@ -1,5 +1,7 @@
+from __future__ import annotations
 import argparse
 import asyncio
+from enum import Enum
 import json
 import os
 import secrets
@@ -57,30 +59,45 @@ class FailedServer(Server):
     start_failure_time: datetime
     startup_events: List[dict]
 
+@dataclass
+class NBGitpullerURL:
+    full_url: URL
+    expected_final_url: str
+    extension_url: URL
+
+    @classmethod
+    def from_url(cls, full_url: URL) -> NBGitpullerURL:
+        if not full_url.path.startswith("/hub/user-redirect/git-pull"):
+            raise ValueError(f"Not a valid nbgitpuller URL: {full_url} does not start with `/hub/user-redirect/git-pull`")
+
+        return NBGitpullerURL(
+            full_url,
+            full_url.query["urlpath"].rstrip("/"),
+            full_url.with_path("git-pull")
+        )
+
+    def make_fullpath(self, server_url: URL, targetpath: str) -> URL:
+        return (server_url / self.extension_url.path).with_query(self.extension_url.query).extend_query(
+            {"targetpath": targetpath}
+        )
+
 
 async def load_nbgitpuller_url(
     browser: Browser,
     server: RunningServer,
     token: str,
-    nbgitpuller_url: URL,
+    nbgitpuller_url: NBGitpullerURL,
     screenshot_name: str,
 ):
     print(f"visiting {server.server_url}")
-    nbgitpuller_url = nbgitpuller_url.extend_query(
-        {"targetpath": secrets.token_urlsafe(8)}
-    )
-    target_url = (server.server_url / nbgitpuller_url.path).with_query(
-        nbgitpuller_url.query
-    )
-    await_url = server.server_url / target_url.query.get("urlpath", "/lab").rstrip("/")
     start_time = datetime.now()
 
     context = await browser.new_context(
         extra_http_headers={"Authorization": f"token {token}"}
     )
     page = await context.new_page()
-    await page.goto(str(target_url))
-    await page.wait_for_url(str(await_url), timeout=120 * 10 * 1000)
+    await page.goto(str(nbgitpuller_url.make_fullpath(server.server_url, secrets.token_hex(8))))
+    await page.wait_for_url(nbgitpuller_url.expected_final_url, timeout=120 * 10 * 1000)
     await page.wait_for_load_state("networkidle")
     await page.screenshot(path=screenshot_name)
     duration = datetime.now() - start_time
@@ -142,7 +159,7 @@ async def payload(
     session: aiohttp.ClientSession,
     browser: Browser,
     auth_token: str,
-    nbgitpuller_url: URL,
+    nbgitpuller_url: NBGitpullerURL,
     server: Server,
 ):
     started_server = await start_named_server(session, server)
@@ -171,9 +188,9 @@ async def main():
         help="Max Numbers of Servers to start at the same time",
     )
     # nbgitpuller_url = URL("git-pull?repo=https%3A%2F%2Fkernel.googlesource.com%2Fpub%2Fscm%2Flinux%2Fkernel%2Fgit%2Ftorvalds%2Flinux.git&urlpath=lab&branch=master")
-    nbgitpuller_url = URL(
-        "git-pull?repo=https%3A%2F%2Fgithub.com%2Fspara%2Fcloud-101-geolab&urlpath=lab%2Ftree%2Fcloud-101-geolab%2F&branch=main"
-    )
+    nbgitpuller_url = NBGitpullerURL.from_url(URL(
+        "https://staging.aws.2i2c.cloud/hub/user-redirect/git-pull?repo=https%3A%2F%2Fgithub.com%2Fspara%2Fcloud-101-geolab&urlpath=lab%2Ftree%2Fcloud-101-geolab%2F&branch=main"
+    ))
 
     args = argparser.parse_args()
 
