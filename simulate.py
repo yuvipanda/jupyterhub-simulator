@@ -105,7 +105,7 @@ async def load_nbgitpuller_url(
 
 
 async def start_named_server(
-    session: aiohttp.ClientSession, server: Server
+    session: aiohttp.ClientSession, server: Server, profile_options: dict[str, str] | None = None
 ) -> RunningServer | None:
     """
     Try to start a named server as defined
@@ -120,7 +120,7 @@ async def start_named_server(
         / server.servername
     )
     events = []
-    async with session.post(server_api_url, headers=headers) as resp:
+    async with session.post(server_api_url, headers=headers, json=profile_options) as resp:
         start_time = datetime.now()
         if resp.status == 202:
             # we are awaiting start, let's look for events
@@ -160,9 +160,10 @@ async def payload(
     browser: Browser,
     auth_token: str,
     nbgitpuller_url: NBGitpullerURL,
+    profile_options: dict[str, str] | None,
     server: Server,
 ):
-    started_server = await start_named_server(session, server)
+    started_server = await start_named_server(session, server, profile_options)
     match started_server:
         case RunningServer():
             await load_nbgitpuller_url(
@@ -179,6 +180,7 @@ async def payload(
 async def main():
     argparser = argparse.ArgumentParser()
     argparser.add_argument("hub_url", help="Full URL to the JupyterHub to test against")
+    argparser.add_argument("server_prefix", help="Prefix used for named servers started in this run")
     argparser.add_argument("username", help="Name of the user")
     argparser.add_argument("servers_count", type=int, help="Number of servers to start")
     argparser.add_argument(
@@ -186,6 +188,11 @@ async def main():
         type=int,
         default=30,
         help="Max Numbers of Servers to start at the same time",
+    )
+    argparser.add_argument(
+        '--profile-option',
+        help="Additional profile option to specify when starting the server (of key=value form)",
+        nargs="*"
     )
     # nbgitpuller_url = URL("git-pull?repo=https%3A%2F%2Fkernel.googlesource.com%2Fpub%2Fscm%2Flinux%2Fkernel%2Fgit%2Ftorvalds%2Flinux.git&urlpath=lab&branch=master")
     nbgitpuller_url = NBGitpullerURL.from_url(URL(
@@ -196,17 +203,24 @@ async def main():
 
     token = os.environ["JUPYTERHUB_TOKEN"]
 
+    profile_options = None
+    if args.profile_option:
+        profile_options = {}
+        for po in args.profile_option:
+            key, value = po.split('=', 2)
+            profile_options[key] = value
+
     hub_url = URL(args.hub_url)
     async with async_playwright() as p:
         browser = await p.firefox.launch(headless=False)
         async with aiohttp.ClientSession() as session:
             servers_to_start = [
-                Server(f"perf-{i}", args.username, HubAccess(hub_url, token))
+                Server(f"{args.server_prefix}-{i}", args.username, HubAccess(hub_url, token))
                 for i in range(args.servers_count)
             ]
             await aiometer.run_all(
                 [
-                    partial(payload, session, browser, token, nbgitpuller_url, server)
+                    partial(payload, session, browser, token, nbgitpuller_url, profile_options, server)
                     for server in servers_to_start
                 ],
                 max_at_once=args.max_concurrency,
