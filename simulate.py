@@ -95,6 +95,7 @@ async def load_nbgitpuller_url(
     context = await browser.new_context(
         extra_http_headers={"Authorization": f"token {token}"}
     )
+    context.set_default_timeout(10 * 60 * 1000)
     page = await context.new_page()
     targetpath = secrets.token_hex(8)
     going_to = nbgitpuller_url.make_fullpath(server.server_url, targetpath)
@@ -102,7 +103,7 @@ async def load_nbgitpuller_url(
     expected_final_full_url = str(nbgitpuller_url.make_expectedpath(server.server_url, targetpath))
     await page.wait_for_url(expected_final_full_url, timeout=120 * 10 * 1000)
     await page.wait_for_load_state("networkidle")
-    await page.screenshot(path=screenshot_name, timeout=5 * 60 * 1000)
+    await page.screenshot(path=screenshot_name)
     return TimedResult(time.perf_counter() - start_time, None)
 
 async def start_named_server(
