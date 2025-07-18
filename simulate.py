@@ -61,25 +61,23 @@ class FailedServer(Server):
 
 @dataclass
 class NBGitpullerURL:
-    full_url: URL
-    expected_final_url: str
-    extension_url: URL
-
-    @classmethod
-    def from_url(cls, full_url: URL) -> NBGitpullerURL:
-        if not full_url.path.startswith("/hub/user-redirect/git-pull"):
-            raise ValueError(f"Not a valid nbgitpuller URL: {full_url} does not start with `/hub/user-redirect/git-pull`")
-
-        return NBGitpullerURL(
-            full_url,
-            full_url.query["urlpath"].rstrip("/"),
-            full_url.with_path("git-pull")
-        )
+    repo: str
+    ref: str
+    open_path: str
 
     def make_fullpath(self, server_url: URL, targetpath: str) -> URL:
-        return (server_url / self.extension_url.path).with_query(self.extension_url.query).extend_query(
-            {"targetpath": targetpath}
-        )
+        query_params = {
+            "repo": self.repo,
+            "branch": self.ref,
+            "targetPath": targetpath,
+            "urlPath": os.path.join("tree", targetpath, self.open_path)
+        }
+
+        return (server_url / "git-pull").with_query(query_params)
+
+    def make_expectedpath(self, server_url: URL, targetpath: str) -> URL:
+        url_path = os.path.join("tree", targetpath, self.open_path)
+        return server_url.joinpath(url_path, encoded=True)
 
 
 async def load_nbgitpuller_url(
@@ -194,13 +192,10 @@ async def main():
         help="Additional profile option to specify when starting the server (of key=value form)",
         nargs="*"
     )
-    # nbgitpuller_url = URL("git-pull?repo=https%3A%2F%2Fkernel.googlesource.com%2Fpub%2Fscm%2Flinux%2Fkernel%2Fgit%2Ftorvalds%2Flinux.git&urlpath=lab&branch=master")
-    nbgitpuller_url = NBGitpullerURL.from_url(URL(
-        "https://staging.aws.2i2c.cloud/hub/user-redirect/git-pull?repo=https%3A%2F%2Fgithub.com%2Fspara%2Fcloud-101-geolab&urlpath=lab%2Ftree%2Fcloud-101-geolab%2F&branch=main"
-    ))
 
     args = argparser.parse_args()
 
+    nbgitpuller_url = NBGitpullerURL("https://github.com/mspass-team/mspass_tutorial/", "master", "Earthscope2025")
     token = os.environ["JUPYTERHUB_TOKEN"]
 
     profile_options = None
