@@ -148,6 +148,11 @@ async def start_named_server(
                                 ),
                             )
                         )
+        elif resp.status == 429:
+            # Sleep for upto roughly 2s and try again
+            # FIXME: Make more robust and use a retry app?
+            await asyncio.sleep(1 + random.random())
+            return await start_named_server(session, server, profile_options)
         elif resp.status == 201:
             # Means the server is immediately ready, and i don't want to deal with that yet
             raise NotImplementedError()
