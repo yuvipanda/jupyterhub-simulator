@@ -1,4 +1,5 @@
 from __future__ import annotations
+import random
 import argparse
 import asyncio
 from enum import Enum
@@ -9,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
 import time
-from typing import List
+from typing import Any, Coroutine, List
 
 import aiohttp
 import aiometer
@@ -160,6 +161,13 @@ async def start_named_server(
             # Some kinda error
             resp.raise_for_status()
 
+def poisson_distribution_wait_times(rate: float, count: int) -> list[float]:
+    wait_times = []
+    t = 0
+    while(len(wait_times) < count):
+        t += random.expovariate(rate)
+        wait_times.append(t)
+    return wait_times
 
 async def payload(
     session: aiohttp.ClientSession,
@@ -193,6 +201,9 @@ async def payload(
 
     print(f"{server.servername}: {timing_info}")
 
+async def delay(duration: float, callable: Coroutine) -> Any:
+    await asyncio.sleep(duration)
+    return await callable
 
 async def main():
     argparser = argparse.ArgumentParser()
@@ -200,6 +211,7 @@ async def main():
     argparser.add_argument("server_prefix", help="Prefix used for named servers started in this run")
     argparser.add_argument("username", help="Name of the user")
     argparser.add_argument("servers_count", type=int, help="Number of servers to start")
+    argparser.add_argument("server_startup_rate", type=int, help="Number of servers to start per minute")
     # FIXME: This shouldn't be here.
     argparser.add_argument(
         "--max-concurrency",
@@ -233,10 +245,12 @@ async def main():
                 Server(f"{args.server_prefix}-{i}", args.username, HubAccess(hub_url, token))
                 for i in range(args.servers_count)
             ]
+            delays = poisson_distribution_wait_times(args.server_startup_rate / 60, args.servers_count)
+            print(delays)
             await aiometer.run_all(
                 [
-                    partial(payload, session, browser, token, nbgitpuller_url, profile_options, server)
-                    for server in servers_to_start
+                    partial(delay, duration, payload(session, browser, token, nbgitpuller_url, profile_options, server))
+                    for server, duration in zip(servers_to_start, delays)
                 ],
                 max_at_once=args.max_concurrency,
             )
