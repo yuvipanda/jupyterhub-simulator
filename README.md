@@ -15,7 +15,4 @@ Successor to [hubtraf](https://github.com/yuvipanda/hubtraf).
 
 ## TODO
 
-- Support spawning on hubs with profile lists.
-- Support passing on to [playwright-python](https://playwright.dev/python/docs/intro) after the
-  server has been started, so we can more accurately test user workflows directly.
 - Output telemetry data in a fashion that can be easily graphed.
